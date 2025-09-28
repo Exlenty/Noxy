@@ -1,19 +1,31 @@
+import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Depends
 from ultralytics import YOLO
 import tempfile
 import os
+import asyncio
 import mysql.connector
 from datetime import datetime, timedelta
+from typing import Optional
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="NoxyAPI")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 MODELS = {
     "Noxy": "noxy.pt",
 }
 
 db_config = {
-    'host': '188.127.241.8',
+    'host': '172.18.0.1',
     'user': 'gs107231',
     'password': 'CnS2p1qh9h',
     'database': 'gs107231'
@@ -27,47 +39,27 @@ for name, model_path in MODELS.items():
     except Exception as e:
         print(f"Error loading {name}: {e}")
 
-
 def get_db_connection():
     return mysql.connector.connect(**db_config)
-
 
 def create_tables():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
+        
         cursor.execute('''
-                       CREATE TABLE IF NOT EXISTS users
-                       (
-                           id
-                           INT
-                           AUTO_INCREMENT
-                           PRIMARY
-                           KEY,
-                           login
-                           VARCHAR
-                       (
-                           255
-                       ) UNIQUE NOT NULL,
-                           api_key VARCHAR
-                       (
-                           255
-                       ) UNIQUE NOT NULL,
-                           password VARCHAR
-                       (
-                           255
-                       ) NOT NULL,
-                           email VARCHAR
-                       (
-                           255
-                       ),
-                           register_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-                           subscription_end DATETIME,
-                           is_active BOOLEAN DEFAULT TRUE
-                           )
-                       ''')
-
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                login VARCHAR(255) UNIQUE NOT NULL,
+                api_key VARCHAR(255) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                email VARCHAR(255),
+                register_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                subscription_end DATETIME,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        ''')
+        
         conn.commit()
         cursor.close()
         conn.close()
@@ -75,40 +67,37 @@ def create_tables():
     except Exception as e:
         print(f"Error creating tables: {e}")
 
-
 create_tables()
-
 
 async def verify_api_key(api_key: str = Header(...), login: str = Header(...)):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-
+        
         cursor.execute(
             "SELECT * FROM users WHERE login = %s AND api_key = %s AND is_active = TRUE",
             (login, api_key)
         )
-
+        
         user = cursor.fetchone()
         cursor.close()
         conn.close()
-
+        
         if not user:
             raise HTTPException(status_code=401, detail="Invalid API key or login")
-
+        
         current_time = datetime.now()
         if user['subscription_end'] and user['subscription_end'] < current_time:
             raise HTTPException(
-                status_code=403,
+                status_code=403, 
                 detail="Subscription expired. Please renew: https://noxy.com"
             )
-
+        
         return user
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
 
 def extract_captcha_from_yolo(results, confidence_threshold=0.3):
     if not results or len(results) == 0:
@@ -143,7 +132,6 @@ def extract_captcha_from_yolo(results, confidence_threshold=0.3):
 
     return captcha_text, avg_confidence
 
-
 async def predict_with_model(model, image_path):
     try:
         results = model.predict(
@@ -170,11 +158,10 @@ async def predict_with_model(model, image_path):
             "error": str(e)
         }
 
-
 @app.post("/captcha")
 async def solve_captcha(
-        image: UploadFile = File(...),
-        user: dict = Depends(verify_api_key)
+    image: UploadFile = File(...),
+    user: dict = Depends(verify_api_key)
 ):
     try:
         if not image.content_type.startswith('image/'):
@@ -206,25 +193,39 @@ async def solve_captcha(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-
 @app.get("/status")
 async def server_status(user: dict = Depends(verify_api_key)):
     try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("SELECT COUNT(*) as total_users FROM users")
+        total_users = cursor.fetchone()['total_users']
+        
+        cursor.execute("SELECT COUNT(*) as active_users FROM users WHERE is_active = TRUE")
+        active_users = cursor.fetchone()['active_users']
+        
+        cursor.close()
+        conn.close()
+        
         models_status = {}
         for name, model in loaded_models.items():
             models_status[name] = "loaded" if model else "error"
-
+        
         return {
             "server_status": "online",
-            "models_status": models_status
+            "total_users": total_users,
+            "active_users": active_users,
+            "models_status": models_status,
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
+
 @app.get("/")
 async def root():
     return {"message": "NoxyAPI is working!"}
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
