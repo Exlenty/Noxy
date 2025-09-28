@@ -25,7 +25,7 @@ MODELS = {
 }
 
 db_config = {
-    'host': '172.18.0.1',
+    'host': '188.127.241.8',
     'user': 'gs107231',
     'password': 'CnS2p1qh9h',
     'database': 'gs107231'
@@ -229,3 +229,4 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
